@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./static/style.css">
+    <link rel="stylesheet" href="./static/devices.min.css">
+    <link rel="stylesheet" href="./static/material-design-iconic-font.min.css">
+
+    <title>Chatbot for Restaurant Reservation</title>
+</head>
+<body>
+    <main>
+        <div class="page">
+            <div class="marvel-device nexus5">
+                <div class="top-bar"></div>
+                <div class="sleep"></div>
+                <div class="volume"></div>
+                <div class="camera"></div>
+                <div class="screen">
+                    <div class="screen-container">
+                        <div class="status-bar">
+                          <div class="time"></div>
+                          <div class="battery">
+                            <i class="zmdi zmdi-battery"></i>
+                          </div>
+                          <div class="network">
+                            <i class="zmdi zmdi-network"></i>
+                          </div>
+                          <div class="wifi">
+                            <i class="zmdi zmdi-wifi-alt-2"></i>
+                          </div>
+                          <div class="star">
+                            <i class="zmdi zmdi-star"></i>
+                          </div>
+                        </div>
+                        <div class="chat">
+                            <div class="chat-container">
+                                <div class="user-bar">
+                                  <div class="back">
+                                    <i class="zmdi zmdi-arrow-left"></i>
+                                  </div>
+                                  <div class="avatar">
+                                    <img src="./static/bot2.png" alt="Avatar">
+                                  </div>
+                                  <div class="name">
+                                    <span>Chat-PPT</span>
+                                    <span class="status">Your restaurant booking assistant</span>
+                                  </div>
+                                </div>
+                                <div class="chat-section">
+                                    <div class="chat-view">
+                                            <div class="bot-container">
+                                                <div class="bot-msg">Hello! Want some help? I can help you with Restaurant Booking.</div>
+                                            </div>
+                                    </div>
+                                    <div class="type-section">
+                                        <div class="emoji">
+                                          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" id="smiley" x="3147" y="3209"><path fill-rule="evenodd" clip-rule="evenodd" d="M9.153 11.603c.795 0 1.44-.88 1.44-1.962s-.645-1.96-1.44-1.96c-.795 0-1.44.88-1.44 1.96s.645 1.965 1.44 1.965zM5.95 12.965c-.027-.307-.132 5.218 6.062 5.55 6.066-.25 6.066-5.55 6.066-5.55-6.078 1.416-12.13 0-12.13 0zm11.362 1.108s-.67 1.96-5.05 1.96c-3.506 0-5.39-1.165-5.608-1.96 0 0 5.912 1.055 10.658 0zM11.804 1.01C5.61 1.01.978 6.034.978 12.23s4.826 10.76 11.02 10.76S23.02 18.424 23.02 12.23c0-6.197-5.02-11.22-11.216-11.22zM12 21.355c-5.273 0-9.38-3.886-9.38-9.16 0-5.272 3.94-9.547 9.214-9.547a9.548 9.548 0 0 1 9.548 9.548c0 5.272-4.11 9.16-9.382 9.16zm3.108-9.75c.795 0 1.44-.88 1.44-1.963s-.645-1.96-1.44-1.96c-.795 0-1.44.878-1.44 1.96s.645 1.963 1.44 1.963z" fill="#7d8489"/></svg>
+                                        </div>
+                                        <input id="my-text" class="input-msg" type="text" name="msg" placeholder="Type a message">
+                                        <div class="photo">
+                                          <i class="zmdi zmdi-camera"></i>
+                                        </div>
+                                        <button class="send">
+                                            <div class="circle">
+                                              <i class="zmdi zmdi-mail-send"></i>
+                                            </div>
+                                        </button>
+                                    </div>
+
+                                </div>
+                            </div>
+                        </div>
+                     </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+    <script src="https://smtpjs.com/smtp.js"></script>
+    <script>
+        let arrayAnswer = [];
+        let arrayQuestions = [];
+        let questionsDict = {};
+        let filledParams = {};
+        let questionKey = "";
+        let service_id = "";
+        let user_intent = "";
+        let turnCount = 0;
+        let userInput = "";
+        let initialInputCaptured = false;
+        let userEmail = "";
+        let services = [];
+        let awaitingResponse = false;
+
+        // Nueva variable global para almacenar datos del servidor
+        let serverData = {
+            intent: '',
+            filledSlots: {},
+            userinput: '',
+            useranswers: [],
+            email: '',
+            service: '',
+            services: []
+        };
+
+        // Función para mostrar mensajes de error
+        function showErrorMessage(message) {
+            let botBubble = '<div class="bot-container"><div class="bot-msg"><p>' + message + '</p></div></div>';
+            $(".chat-view").append(botBubble);
+        }
+
+        async function handleNextStep() {
+            console.log("ENTRO EN HANDLENEXTSTEP CON TOURNCOUNT:", turnCount);
+
+            if (awaitingResponse) return; // Salir si ya hay una solicitud en curso
+            awaitingResponse = true; // Establecer awaitingResponse aquí
+
+            // Usar siempre los datos actualizados de `serverData` para construir `requestData`
+            const requestData = {
+                intent: serverData.intent,
+                filledSlots: serverData.filledSlots,
+                userinput: serverData.userinput,
+                useranswers: serverData.useranswers,
+                email: serverData.email,
+                service: serverData.service || "",
+                services: serverData.services
+            };
+
+            console.log("Preparando requestData para la siguiente llamada:", requestData);
+
+            try {
+                if (turnCount === 0) {
+                    console.log('Llamada inicial a /intent con turnCount:', turnCount);
+                    await getInitialQuestions(requestData);
+                } else if (turnCount === 1) {
+                    console.log('Llamada a /chat con turnCount:', turnCount);
+                    await getQuestions(requestData);
+                } else if (turnCount === 2) {
+                    if (serverData.services.length > 0) {
+                        console.log('Llamada a /slotfilling con turnCount:', turnCount);
+                        await handleSlotFilling(requestData);
+                    } else {
+                        console.log('Preguntas finales. Pidiendo email antes de llamar a /serviceinfo/data con turnCount:', turnCount);
+                        await askForEmail(); // Pedir email antes de llamar a /serviceinfo/data
+                    }
+                } else if (turnCount === 3) {
+                    // Verificar si el email está proporcionado antes de enviar los datos
+                    if (!serverData.email) {
+                        console.log('Email no proporcionado. Pidiendo email al usuario.');
+                        await askForEmail(); // Pedir email si no está proporcionado
+                    } else {
+                        console.log('Enviando datos a /serviceinfo/data después de recibir el email.');
+                        await sendDataToServer(); // Enviar datos después de tener el email
+                    }
+                }
+                else{
+                    if (!serverData.email) {
+                        console.log('Email no proporcionado. Pidiendo email al usuario.');
+                        await askForEmail(); // Pedir email si no está proporcionado
+                    } else {
+                        console.log('Enviando datos a /serviceinfo/data después de recibir el email.');
+                        await sendDataToServer(); // Enviar datos después de tener el email
+                    }
+                }
+            } catch (error) {
+                console.error('Error en handleNextStep:', error);
+                showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            } finally {
+                awaitingResponse = false;
+                console.log('awaitingResponse restablecido a false después de handleNextStep.');
+            }
+        }
+
+        async function getInitialQuestions(requestData) {
+            console.log("Entrando en getInitialQuestions");
+
+            try {
+                console.log('Haciendo llamada a /intent con turnCount:', turnCount);
+
+                const response = await fetch('/intent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestData)
+                });
+
+                console.log('Estado de la respuesta de /intent:', response.status);
+
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+
+                const data = await response.json();
+                console.log('Datos recibidos de /intent:', data);
+                await processQuestionsData(data); // Asegúrate de esperar a que se procese
+
+                // Aquí actualizamos el objeto serverData con los datos recibidos
+                serverData.intent = data.intent || serverData.intent;
+                serverData.filledSlots = data.filled || serverData.filledSlots;
+                serverData.userinput = data.userinput || serverData.userinput;
+                serverData.useranswers = data.useranswers || serverData.useranswers;
+                serverData.email = data.email || serverData.email;
+                serverData.service = data.service || serverData.service;
+                serverData.services = data.services || serverData.services;
+
+                console.log("Actualizando datos del servidor antes de llamar a /chat:", serverData);
+
+                if (arrayQuestions.length === 0) {
+                    console.log('No hay preguntas devueltas por /intent. Llamando directamente a /chat...');
+                    turnCount = 1; // Incrementar turnCount para la siguiente llamada
+                    await getQuestions(serverData); // Cambiar a llamar directamente a getQuestions
+                } else {
+                    console.log('Preguntas encontradas, mostrando la siguiente pregunta...');
+                }
+            } catch (error) {
+                console.error('Error en llamada a /intent:', error);
+                showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            }
+        }
+
+        async function getQuestions(requestData) {
+            console.log("Entrando en getQuestions");
+
+            try {
+                console.log('Haciendo llamada a /chat con turnCount:', turnCount);
+
+                // Mostrar el contenido de requestData antes de hacer la llamada
+                console.log('Datos que se enviarán a /chat:', requestData);
+
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestData)
+                });
+
+                console.log('Estado de la respuesta de /chat:', response.status);
+
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+
+                const data = await response.json();
+                console.log('Datos recibidos de /chat:', data);
+                await processQuestionsData(data); // Asegúrate de esperar a que se procese
+
+                if (data["service_id"]) {
+                    console.log("Estamos en las preguntas finales.");
+                    turnCount = 3;
+                    await handleNextStep(); // Continuar con el flujo con await
+                }
+            } catch (error) {
+                console.error('Error en llamada a /chat:', error);
+                showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            }
+        }
+
+        async function processQuestionsData(data) {
+            // Actualizar datos del servidor
+            if (data["intent"] && data["intent"].trim() !== "") {
+                console.log("Actualizando intent a:", data["intent"]);
+                serverData.intent = data["intent"];
+            }
+
+            if (data["service_id"] && data["service_id"].trim() !== "") {
+                console.log("Actualizando service_id a:", data["service_id"]);
+                serverData.service = data["service_id"];
+            }
+
+            if (data["services"] && data["services"].length > 0) {
+                console.log("Actualizando services a:", data["services"]);
+                serverData.services = data["services"];
+            }
+
+            if (data["questions"] && typeof data["questions"] === 'object') {
+                arrayQuestions = Object.values(data["questions"]).filter(val => val !== '');
+                questionsDict = data["questions"];
+            }
+
+            if (data["filled"] && typeof data["filled"] === 'object') {
+                Object.keys(data["filled"]).forEach(function (key) {
+                    if (!serverData.filledSlots[key]) {
+                        serverData.filledSlots[key] = data["filled"][key];
+                    }
+                });
+            }
+
+            if (data["useranswers"] && Array.isArray(data["useranswers"])) {
+                data["useranswers"].forEach(answer => {
+                    if (!serverData.useranswers.some(existing => existing.question === answer.question && existing.answer === answer.answer)) {
+                        serverData.useranswers.push(answer);
+                    }
+                });
+            }
+
+            console.log("Actualizando datos del servidor:", serverData);
+
+            if (arrayQuestions.length > 0) {
+                console.log('MUESTRO PREGUNTA: ' + arrayQuestions[0]);
+                questionKey = Object.keys(questionsDict)[0];
+                showQuestion(0);  // Mostrar la primera pregunta
+            } else {
+                console.log('No hay más preguntas. Gestionando siguiente paso...');
+                turnCount++; // Incrementar el contador de turnos
+                await handleNextStep(); // Continuar con el flujo con await
+            }
+        }
+
+        async function handleSlotFilling(requestData) {
+            console.log("Entrando en handleSlotFilling");
+
+            try {
+                console.log("Llamada a /slotfilling con turnCount:", turnCount);
+
+                const response = await fetch('/slotfilling', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestData)
+                });
+
+                console.log('Estado de la respuesta de /slotfilling:', response.status);
+
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+
+                const data = await response.json();
+                console.log('Datos recibidos de /slotfilling:', data);
+                processQuestionsData(data);
+
+                if (arrayQuestions.length === 0) {
+                    console.log('Slotfilling completado. Solicitando email antes de enviar datos.');
+                    turnCount = 3;
+                    askForEmail();
+                }
+            } catch (error) {
+                console.error('Error en llamada a /slotfilling:', error);
+                showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            }
+        }
+
+        function showQuestion(number) {
+            if (number < arrayQuestions.length) {
+                let botBubble = '<div class="bot-container"><div class="bot-msg"><p>' + arrayQuestions[number] + '</p></div></div>';
+                $(".chat-view").append(botBubble);
+            }
+        }
+
+        async function askForEmail() {
+            if (!userEmail && arrayQuestions.length === 0 && Object.keys(questionsDict).length === 0 && serverData.service) {
+                const emailPrompt = "Please provide your email to confirm the reservation.";
+                showQuestionText(emailPrompt);
+
+                // Capturar la entrada del email
+                $("#my-text").off('keypress').on('keypress', async function (e) {
+                    if (e.which == 13) {
+                        e.preventDefault();
+                        let emailInput = $("#my-text").val().trim();
+                        if (emailInput !== "") {
+                            userEmail = emailInput;
+                            serverData.email = emailInput;
+
+                            let userBubble = '<div class="your-container"><div class="your-msg">' + userEmail + '</div></div>';
+                            $(".chat-view").append(userBubble);
+                            $(".chat-view").stop().animate({scrollTop: $(".chat-view")[0].scrollHeight}, 1000);
+
+                            $("#my-text").val("");
+                            console.log('Email proporcionado: ' + userEmail + '. Enviando datos al servidor...');
+
+                            // Establecer el turnCount en 3 para que `handleNextStep` haga la llamada al servidor
+                            turnCount = 3;
+
+                            // Llamar a handleNextStep() después de recibir el email
+                            await handleNextStep();
+                        } else {
+                            showErrorMessage("Please provide a valid email.");
+                        }
+                    }
+                });
+            } else if (userEmail) {
+                console.log('Email ya estaba proporcionado. Enviando datos al servidor...');
+                turnCount = 3; // Aseguramos que el turno esté en el correcto para la siguiente llamada
+                await handleNextStep();
+            }
+        }
+
+        function showQuestionText(text) {
+            let botBubble = '<div class="bot-container"><div class="bot-msg"><p>' + text + '</p></div></div>';
+            $(".chat-view").append(botBubble);
+        }
+
+        function sendDataToServer() {
+            const requestData = {
+                intent: serverData.intent,
+                filledSlots: serverData.filledSlots,
+                userinput: serverData.userinput,
+                useranswers: serverData.useranswers,
+                email: serverData.email,
+                service: serverData.service || "",
+                services: serverData.services
+            };
+            fetch('/serviceinfo/data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestData),
+            })
+            .then(response => response.json())
+            .then(responseData => {
+                console.log('Response Data:', responseData);
+                showFinalMessage();
+            })
+            .catch(error => {
+                console.error('Error en sendDataToServer:', error);
+                showErrorMessage("An error occurred while processing your request. Please try again.");
+            });
+        }
+
+        function showFinalMessage() {
+    let botBubble = '<div class="bot-container"><div class="bot-msg"><p>Thank you! Your reservation will be processed. Goodbye!</p></div></div>';
+    $(".chat-view").append(botBubble);
+}
+
+        $("#my-text").keypress(async function (e) {
+            if (e.which == 13) { // Tecla Enter
+                e.preventDefault();
+                let myText = $("#my-text").val().trim();
+                if (myText === "") return; // No hacer nada si la entrada está vacía
+
+                // Mostrar el mensaje del usuario en la interfaz
+                let userBubble = '<div class="your-container"><div class="your-msg">' + myText + '</div></div>';
+                $("#my-text").val("");
+                $(".chat-view").append(userBubble);
+                $(".chat-view").stop().animate({ scrollTop: $(".chat-view")[0].scrollHeight }, 1000);
+
+                // Capturar la entrada inicial del usuario
+                if (!initialInputCaptured) {
+                    userInput = myText;
+                    serverData.userinput = myText;
+                    initialInputCaptured = true;
+                }
+
+                if (questionKey && myText !== "") {
+                    // Actualizar los slots llenados y las respuestas del usuario
+                    filledParams[questionKey] = myText;
+                    console.log("filledParams:", filledParams);
+                    serverData.filledSlots[questionKey] = myText; // Actualizar el slot en serverData
+                    arrayAnswer.push({
+                        question: questionsDict[questionKey],
+                        answer: myText
+                    });
+
+                    console.log("Array de respuestas:", arrayAnswer);
+
+                    serverData.useranswers.push({
+                        question: questionsDict[questionKey],
+                        answer: myText
+                    }); // Actualizar la respuesta en serverData
+
+                    delete questionsDict[questionKey]; // Eliminar la pregunta contestada
+
+                    let keysArray = Object.keys(questionsDict);
+                    if (keysArray.length > 0) {
+                        questionKey = keysArray[0]; // Actualizar la clave de la siguiente pregunta
+                    }
+
+                    // Mostrar la siguiente pregunta si hay más en el array
+                    if (arrayQuestions.length > 0) {
+                        console.log("elimino la pregunta: ", arrayQuestions[0]);
+                        arrayQuestions.shift();
+                        if(arrayQuestions.length > 0) {
+                            showQuestion(0); // Mostrar la siguiente pregunta
+                        } else {
+                            console.log("No hay más preguntas");
+                            // Si no hay más preguntas, pasar al siguiente paso
+                            turnCount++;
+                            await handleNextStep();
+                        }
+                    } else {
+                        console.log("No hay más preguntas");
+                        // Si no hay más preguntas, pasar al siguiente paso
+                        turnCount++;
+                        await handleNextStep();
+                    }
+                } else {
+                    // Si no hay pregunta clave o la entrada está vacía, avanzar al siguiente paso
+                    await handleNextStep();
+                }
+            }
+        });
+    </script>
+
+</body>
+</html>
