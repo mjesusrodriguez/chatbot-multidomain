@@ -45,13 +45,13 @@
                                   </div>
                                   <div class="name">
                                     <span>Chat-PPT</span>
-                                    <span class="status">Your restaurant booking assistant</span>
+                                    <span class="status">Your favourite assistant</span>
                                   </div>
                                 </div>
                                 <div class="chat-section">
                                     <div class="chat-view">
                                             <div class="bot-container">
-                                                <div class="bot-msg">Hello! Want some help? I can help you with Restaurant Booking.</div>
+                                                <div class="bot-msg">Hello! Want some help?</div>
                                             </div>
                                     </div>
                                     <div class="type-section">
@@ -104,7 +104,9 @@
             useranswers: [],
             email: '',
             service: '',
-            services: []
+            services: [],
+            domain: '',
+            reqslots: []
         };
 
         // Función para mostrar mensajes de error
@@ -115,71 +117,137 @@
 
         async function handleNextStep() {
             console.log("ENTRO EN HANDLENEXTSTEP CON TOURNCOUNT:", turnCount);
+            console.log("awaitingResponse es:", awaitingResponse);
 
-            if (awaitingResponse) return; // Salir si ya hay una solicitud en curso
-            awaitingResponse = true; // Establecer awaitingResponse aquí
+            if (awaitingResponse) {
+                console.log("Bloqueado porque awaitingResponse está en true");
+                return;
+            }
 
-            // Usar siempre los datos actualizados de `serverData` para construir `requestData`
             const requestData = {
-                intent: serverData.intent,
-                filledSlots: serverData.filledSlots,
-                userinput: serverData.userinput,
-                useranswers: serverData.useranswers,
-                email: serverData.email,
-                service: serverData.service || "",
-                services: serverData.services
+                intent: serverData.intent || '',
+                filledSlots: serverData.filledSlots || {},
+                userinput: serverData.userinput || '',
+                useranswers: serverData.useranswers || [],
+                email: serverData.email || '',
+                service: serverData.service || '',
+                services: serverData.services || [],
+                domain: serverData.domain || '',
+                reqslots: serverData.reqslots || []
             };
 
             console.log("Preparando requestData para la siguiente llamada:", requestData);
 
             try {
-                if (turnCount === 0) {
-                    console.log('Llamada inicial a /intent con turnCount:', turnCount);
+                awaitingResponse = true;  // Bloqueamos nuevas interacciones solo antes de las llamadas
+                console.log("awaitingResponse se pone en true antes de llamada asíncrona");
+
+                if (turnCount === 0 || serverData.domain === 'out-of-domain') {
+                    // Si estamos en el primer turno o en "out-of-domain", llamamos siempre a /intent
+                    console.log('Llamada a /intent con turnCount:', turnCount);
                     await getInitialQuestions(requestData);
-                } else if (turnCount === 1) {
-                    console.log('Llamada a /chat con turnCount:', turnCount);
-                    await getQuestions(requestData);
-                } else if (turnCount === 2) {
-                    if (serverData.services.length > 0) {
-                        console.log('Llamada a /slotfilling con turnCount:', turnCount);
-                        await handleSlotFilling(requestData);
-                    } else {
-                        console.log('Preguntas finales. Pidiendo email antes de llamar a /serviceinfo/data con turnCount:', turnCount);
-                        await askForEmail(); // Pedir email antes de llamar a /serviceinfo/data
-                    }
-                } else if (turnCount === 3) {
-                    // Verificar si el email está proporcionado antes de enviar los datos
-                    if (!serverData.email) {
-                        console.log('Email no proporcionado. Pidiendo email al usuario.');
-                        await askForEmail(); // Pedir email si no está proporcionado
-                    } else {
-                        console.log('Enviando datos a /serviceinfo/data después de recibir el email.');
-                        await sendDataToServer(); // Enviar datos después de tener el email
-                    }
                 }
-                else{
+                else if (turnCount === 1) {
+                    console.log('Llamada a /chat con turnCount:', turnCount);
+                    awaitingResponse = false;  // <-- Restablecer antes de la llamada, para permitir la interacción
+                    await getQuestions(requestData);
+                }
+                else if (turnCount === 2) {
+                    console.log('Llamada a /slotfilling con turnCount:', turnCount);
+                    awaitingResponse = false;  // Restablecemos antes de la llamada para permitir la interacción
+                    await handleSlotFilling(requestData);
+                }
+                else if (turnCount === 3) {
                     if (!serverData.email) {
                         console.log('Email no proporcionado. Pidiendo email al usuario.');
-                        await askForEmail(); // Pedir email si no está proporcionado
+                        awaitingResponse = false;  // Restablecemos para permitir la interacción de email
+                        await askForEmail();
                     } else {
                         console.log('Enviando datos a /serviceinfo/data después de recibir el email.');
-                        await sendDataToServer(); // Enviar datos después de tener el email
+                        await sendDataToServer();
                     }
                 }
             } catch (error) {
                 console.error('Error en handleNextStep:', error);
                 showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
             } finally {
+                // Restablecemos awaitingResponse después de cada interacción
                 awaitingResponse = false;
                 console.log('awaitingResponse restablecido a false después de handleNextStep.');
             }
         }
+        /*
+        async function getInitialQuestions(requestData) {
+        console.log("Entrando en getInitialQuestions");
 
+        try {
+            console.log('Haciendo llamada a /intent con turnCount:', turnCount);
+
+            const response = await fetch('/intent', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestData)
+            });
+
+            console.log('Estado de la respuesta de /intent:', response.status);
+
+            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+
+            const data = await response.json();
+            console.log('Datos recibidos de /intent:', data);
+
+            if (data.end_conversation) {
+                showFinalMessage(data.chatbot_answer);
+                resetConversationState();
+                return;
+            }
+
+            if (data.dom === "out-of-domain") {
+                console.log("Dominio fuera de los conocidos. Modo diálogo abierto activado.");
+                await processOpenDomainConversation(data);
+                // Seguimos llamando a intent mientras el dominio sea 'out-of-domain'
+                turnCount = 0;
+                awaitingResponse = false; // Permitir nuevas respuestas del usuario
+            } else {
+                // Si el dominio ya es válido, procesamos la conversación normalmente
+                serverData.intent = data.intent || serverData.intent;
+                serverData.userinput = data.userinput || serverData.userinput;
+                serverData.useranswers = Array.isArray(data.useranswers) && data.useranswers.length > 0 ? data.useranswers : serverData.useranswers;
+                serverData.email = data.email || serverData.email;
+                serverData.service = data.service || serverData.service;
+
+                serverData.domain = data.dom || serverData.domain;
+                serverData.reqslots = Array.isArray(data.reqslots) && data.reqslots.length > 0 ? data.reqslots : serverData.reqslots;
+
+                // Actualizamos los 'filledSlots' solo si no están vacíos
+                Object.keys(data.filled || {}).forEach(function (key) {
+                    if (data.filled[key] && data.filled[key] !== "") {
+                        serverData.filledSlots[key] = data.filled[key];
+                    }
+                });
+
+                console.log("Actualizando datos del servidor antes de continuar.");
+
+                if (!data.questions || Object.keys(data.questions).length === 0) {
+                    console.log('No se devolvieron preguntas por /intent. Llamando a /chat automáticamente.');
+                    turnCount = 1;
+                    await getQuestions(serverData);
+                } else {
+                    await processQuestionsData(data);
+                    turnCount = 1;
+                }
+            }
+        } catch (error) {
+            console.error('Error en llamada a /intent:', error);
+            showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+        }
+    }*/
         async function getInitialQuestions(requestData) {
             console.log("Entrando en getInitialQuestions");
 
             try {
                 console.log('Haciendo llamada a /intent con turnCount:', turnCount);
+                console.log('requestData:', requestData);
 
                 const response = await fetch('/intent', {
                     method: 'POST',
@@ -193,41 +261,68 @@
 
                 const data = await response.json();
                 console.log('Datos recibidos de /intent:', data);
-                await processQuestionsData(data); // Asegúrate de esperar a que se procese
 
-                // Aquí actualizamos el objeto serverData con los datos recibidos
-                serverData.intent = data.intent || serverData.intent;
-                serverData.filledSlots = data.filled || serverData.filledSlots;
-                serverData.userinput = data.userinput || serverData.userinput;
-                serverData.useranswers = data.useranswers || serverData.useranswers;
-                serverData.email = data.email || serverData.email;
-                serverData.service = data.service || serverData.service;
-                serverData.services = data.services || serverData.services;
+                if (data.end_conversation) {
+                    showFinalMessage(data.chatbot_answer);
+                    resetConversationState();
+                    return;
+                }
 
-                console.log("Actualizando datos del servidor antes de llamar a /chat:", serverData);
+                if (data.dom === "out-of-domain") {
+                    console.log("Dominio fuera de los conocidos. Modo diálogo abierto activado.");
 
-                if (arrayQuestions.length === 0) {
-                    console.log('No hay preguntas devueltas por /intent. Llamando directamente a /chat...');
-                    turnCount = 1; // Incrementar turnCount para la siguiente llamada
-                    await getQuestions(serverData); // Cambiar a llamar directamente a getQuestions
+                    serverData.domain = data.dom || serverData.domain;
+                    serverData.useranswers = Array.isArray(data.useranswers) && data.useranswers.length > 0 ? data.useranswers : serverData.useranswers;
+                    await processOpenDomainConversation(data);
+
+                    // **No volvemos a llamar automáticamente, solo esperamos al usuario**
+                    turnCount = 0;
+
                 } else {
-                    console.log('Preguntas encontradas, mostrando la siguiente pregunta...');
+                    // Procesamos el dominio válido
+                    serverData.intent = data.intent || serverData.intent;
+                    serverData.userinput = data.userinput || serverData.userinput;
+                    serverData.useranswers = Array.isArray(data.useranswers) && data.useranswers.length > 0 ? data.useranswers : serverData.useranswers;
+                    serverData.email = data.email || serverData.email;
+                    serverData.service = data.service || serverData.service;
+
+                    serverData.domain = data.dom || serverData.domain;
+                    serverData.reqslots = Array.isArray(data.reqslots) && data.reqslots.length > 0 ? data.reqslots : serverData.reqslots;
+
+                    // Actualizamos los 'filledSlots' solo si no están vacíos
+                    Object.keys(data.filled || {}).forEach(function (key) {
+                        if (data.filled[key] && data.filled[key] !== "") {
+                            serverData.filledSlots[key] = data.filled[key];
+                        }
+                    });
+
+                    console.log("Actualizando datos del servidor antes de continuar.");
+
+                    if (!data.questions || Object.keys(data.questions).length === 0) {
+                        console.log('No se devolvieron preguntas por /intent. Llamando a /chat automáticamente.');
+                        turnCount = 1;
+                        await getQuestions(serverData);
+                    } else {
+                        await processQuestionsData(data);
+                        turnCount = 1;
+                    }
                 }
             } catch (error) {
                 console.error('Error en llamada a /intent:', error);
                 showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            } finally {
+                // Solo restablecemos awaitingResponse si no estamos en el modo "out-of-domain"
+                if (serverData.domain !== 'out-of-domain') {
+                    awaitingResponse = false;
+                }
             }
         }
 
         async function getQuestions(requestData) {
             console.log("Entrando en getQuestions");
+            console.log ("El dominio es:" + requestData.domain)
 
             try {
-                console.log('Haciendo llamada a /chat con turnCount:', turnCount);
-
-                // Mostrar el contenido de requestData antes de hacer la llamada
-                console.log('Datos que se enviarán a /chat:', requestData);
-
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -240,36 +335,76 @@
 
                 const data = await response.json();
                 console.log('Datos recibidos de /chat:', data);
-                await processQuestionsData(data); // Asegúrate de esperar a que se procese
 
-                if (data["service_id"]) {
-                    console.log("Estamos en las preguntas finales.");
+                if (data.end_conversation) {
+                    showFinalMessage(data.chatbot_answer);
+                    resetConversationState();
+                    return;
+                }
+
+                // Actualizamos los datos del servidor sin sobrescribir campos vacíos
+                serverData.intent = data.intent || serverData.intent;
+                serverData.userinput = data.userinput || serverData.userinput;
+                serverData.useranswers = Array.isArray(data.useranswers) && data.useranswers.length > 0 ? data.useranswers : serverData.useranswers;
+                serverData.email = data.email || serverData.email;
+                serverData.service = data.service || serverData.service;
+                serverData.domain = data.dom || serverData.domain;  // Asegúrate de actualizar el dominio
+
+                if (Array.isArray(data.services) && data.services.length > 0) {
+                    serverData.services = data.services;
+                }
+
+                serverData.domain = data.dom || serverData.domain;
+                serverData.reqslots = Array.isArray(data.reqslots) && data.reqslots.length > 0 ? data.reqslots : serverData.reqslots;
+
+                Object.keys(data.filled || {}).forEach(function (key) {
+                    if (data.filled[key] && data.filled[key] !== "") {
+                        serverData.filledSlots[key] = data.filled[key];
+                    }
+                });
+
+                console.log("Actualizando datos del servidor:", serverData);
+
+                await processQuestionsData(data);  // Procesar y almacenar las preguntas
+
+                // Si hay preguntas intermedias, mostramos una pregunta y esperamos respuesta del usuario
+                if (data.services) {
+                    console.log("Preguntas intermedias detectadas. Esperando respuestas.");
+                    turnCount = 2;
+                    //showQuestion(0); // Mostrar la primera pregunta
+                    awaitingResponse = false; // Aquí permitimos la respuesta del usuario, pero no avanzamos automáticamente
+                }
+                else if (data.service_id) {
+                    console.log("Preguntas finales detectadas. Incremento contador a 3");
+                    serverData.service = data.service_id;
                     turnCount = 3;
-                    await handleNextStep(); // Continuar con el flujo con await
+                    await handleNextStep();
                 }
             } catch (error) {
                 console.error('Error en llamada a /chat:', error);
                 showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            } finally {
+                awaitingResponse = false;
             }
         }
 
+        async function processOpenDomainConversation(data) {
+            let chatbot_answer = data.chatbot_answer || "No se recibió respuesta del servidor.";
+            let botBubble = '<div class="bot-container"><div class="bot-msg"><p>' + chatbot_answer + '</p></div></div>';
+            $(".chat-view").append(botBubble);
+            $(".chat-view").stop().animate({ scrollTop: $(".chat-view")[0].scrollHeight }, 1000);
+
+            // Asegúrate de no duplicar interacciones; solo actualiza el historial con los datos del servidor
+            if (Array.isArray(data.useranswers) && data.useranswers.length > 0) {
+                serverData.useranswers = data.useranswers;
+            }
+
+            console.log("Dominio fuera de los conocidos, esperando nuevas interacciones del usuario.");
+
+            awaitingResponse = false;  // Restablecemos awaitingResponse para permitir una nueva interacción
+        }
+
         async function processQuestionsData(data) {
-            // Actualizar datos del servidor
-            if (data["intent"] && data["intent"].trim() !== "") {
-                console.log("Actualizando intent a:", data["intent"]);
-                serverData.intent = data["intent"];
-            }
-
-            if (data["service_id"] && data["service_id"].trim() !== "") {
-                console.log("Actualizando service_id a:", data["service_id"]);
-                serverData.service = data["service_id"];
-            }
-
-            if (data["services"] && data["services"].length > 0) {
-                console.log("Actualizando services a:", data["services"]);
-                serverData.services = data["services"];
-            }
-
             if (data["questions"] && typeof data["questions"] === 'object') {
                 arrayQuestions = Object.values(data["questions"]).filter(val => val !== '');
                 questionsDict = data["questions"];
@@ -277,16 +412,8 @@
 
             if (data["filled"] && typeof data["filled"] === 'object') {
                 Object.keys(data["filled"]).forEach(function (key) {
-                    if (!serverData.filledSlots[key]) {
+                    if (data["filled"][key] && data["filled"][key] !== "") {
                         serverData.filledSlots[key] = data["filled"][key];
-                    }
-                });
-            }
-
-            if (data["useranswers"] && Array.isArray(data["useranswers"])) {
-                data["useranswers"].forEach(answer => {
-                    if (!serverData.useranswers.some(existing => existing.question === answer.question && existing.answer === answer.answer)) {
-                        serverData.useranswers.push(answer);
                     }
                 });
             }
@@ -294,13 +421,9 @@
             console.log("Actualizando datos del servidor:", serverData);
 
             if (arrayQuestions.length > 0) {
-                console.log('MUESTRO PREGUNTA: ' + arrayQuestions[0]);
+                console.log('Mostrando pregunta:', arrayQuestions[0]);
                 questionKey = Object.keys(questionsDict)[0];
-                showQuestion(0);  // Mostrar la primera pregunta
-            } else {
-                console.log('No hay más preguntas. Gestionando siguiente paso...');
-                turnCount++; // Incrementar el contador de turnos
-                await handleNextStep(); // Continuar con el flujo con await
+                showQuestion(0);
             }
         }
 
@@ -322,23 +445,61 @@
 
                 const data = await response.json();
                 console.log('Datos recibidos de /slotfilling:', data);
-                processQuestionsData(data);
 
-                if (arrayQuestions.length === 0) {
-                    console.log('Slotfilling completado. Solicitando email antes de enviar datos.');
-                    turnCount = 3;
-                    askForEmail();
+                if (data.end_conversation) {
+                    showFinalMessage(data.chatbot_answer);
+                    resetConversationState();
+                    return;
                 }
+
+                await processQuestionsData(data);
+
+                // Verificamos si hay un service_id después de slotfilling
+                if (data.service_id) {
+                    console.log("Slotfilling completado, se recibió service_id. Preparando para /serviceinfo/data.");
+                    serverData.service = data.service_id;
+                    turnCount = 3; // Actualizamos turnCount para avanzar a /serviceinfo/data
+
+                    if (!serverData.email) {
+                        console.log("Email no proporcionado, solicitando email antes de enviar datos.");
+                        await askForEmail();
+                    } else {
+                        console.log("Email ya presente, enviando datos a /serviceinfo/data.");
+                        await sendDataToServer();
+                    }
+                } else if (arrayQuestions.length > 0) {
+                    // Si aún quedan preguntas, las mostramos
+                    console.log('Mostrando preguntas de slotfilling.');
+                    showQuestion(0); // Mostrar la primera pregunta
+                    awaitingResponse = false; // Permitimos que el usuario responda antes de continuar
+                } else {
+                    // Si no hay más preguntas ni service_id, entonces solicitamos el email si es necesario
+                    console.log('Slotfilling completado pero sin service_id. Solicitando email antes de enviar datos.');
+                    turnCount = 3;
+                    await askForEmail();
+                }
+
             } catch (error) {
                 console.error('Error en llamada a /slotfilling:', error);
                 showErrorMessage("I cannot help you with that. Can you repeat the question, please?");
+            } finally {
+                awaitingResponse = false;  // Restablecemos awaitingResponse para permitir la siguiente interacción
             }
         }
 
         function showQuestion(number) {
             if (number < arrayQuestions.length) {
+                // Aquí mostramos solo una pregunta a la vez
                 let botBubble = '<div class="bot-container"><div class="bot-msg"><p>' + arrayQuestions[number] + '</p></div></div>';
                 $(".chat-view").append(botBubble);
+                // Scroll automático
+                $(".chat-view").stop().animate({ scrollTop: $(".chat-view")[0].scrollHeight }, 1000);
+
+                console.log("Pregunta mostrada:", arrayQuestions[number]);
+
+                // Aquí esperamos la respuesta del usuario antes de avanzar
+                awaitingResponse = true;  // Bloqueamos nuevas respuestas automáticas hasta que el usuario responda
+                console.log("awaitingResponse establecido a true, esperando respuesta del usuario");
             }
         }
 
@@ -393,7 +554,9 @@
                 useranswers: serverData.useranswers,
                 email: serverData.email,
                 service: serverData.service || "",
-                services: serverData.services
+                services: serverData.services,
+                domain: serverData.domain,
+                reqslots: serverData.reqslots
             };
             fetch('/serviceinfo/data', {
                 method: 'POST',
@@ -411,78 +574,101 @@
             });
         }
 
-        function showFinalMessage() {
-    let botBubble = '<div class="bot-container"><div class="bot-msg"><p>Thank you! Your reservation will be processed. Goodbye!</p></div></div>';
-    $(".chat-view").append(botBubble);
-}
+        function showFinalMessage(chatbotAnswer = null) {
+            let finalMessage = chatbotAnswer || "Thank you! Your request will be processed. Goodbye!";
+            let botBubble = '<div class="bot-container"><div class="bot-msg"><p>' + finalMessage + '</p></div></div>';
+            $(".chat-view").append(botBubble);
+        }
 
+        function resetConversationState() {
+            arrayAnswer = [];
+            arrayQuestions = [];
+            questionsDict = {};
+            filledParams = {};
+            questionKey = "";
+            service_id = "";
+            user_intent = "";
+            turnCount = 0;
+            userInput = "";
+            initialInputCaptured = false;
+            userEmail = "";
+            services = [];
+            awaitingResponse = false;
+
+            // Reiniciar también el objeto serverData
+            serverData = {
+                intent: '',
+                filledSlots: {},
+                userinput: '',
+                useranswers: [],
+                email: '',
+                service: '',
+                services: [],
+                domain: '',
+                reqslots: []
+            };
+        }
+
+        // Función que maneja cuando el usuario responde una pregunta
         $("#my-text").keypress(async function (e) {
-            if (e.which == 13) { // Tecla Enter
+
+            if (e.which == 13 && !awaitingResponse) { // Verificamos que awaitingResponse sea false para procesar la respuesta
+                console.log("Procesando tecla Enter.");
+
                 e.preventDefault();
                 let myText = $("#my-text").val().trim();
                 if (myText === "") return; // No hacer nada si la entrada está vacía
 
-                // Mostrar el mensaje del usuario en la interfaz
                 let userBubble = '<div class="your-container"><div class="your-msg">' + myText + '</div></div>';
                 $("#my-text").val("");
                 $(".chat-view").append(userBubble);
                 $(".chat-view").stop().animate({ scrollTop: $(".chat-view")[0].scrollHeight }, 1000);
 
-                // Capturar la entrada inicial del usuario
+                // Si es la primera interacción, iniciamos el flujo
                 if (!initialInputCaptured) {
-                    userInput = myText;
-                    serverData.userinput = myText;
-                    initialInputCaptured = true;
+                    console.log("Iniciando flujo de conversación con la primera interacción.");
+                    serverData.userinput = myText;  // Guardamos el input inicial
+                    initialInputCaptured = true;    // Marcamos que el input inicial ya fue capturado
+                    awaitingResponse = false;  // Restablecemos awaitingResponse
+                    await handleNextStep();   // Llamamos al siguiente paso
+                    return;
                 }
 
+                console.log("serverdata.domain es: " + serverData.domain);
+
+                serverData.domain = serverData.domain || 'out-of-domain';
+                // Si estamos en modo "out-of-domain"
+                if (serverData.domain === 'out-of-domain') {
+                    console.log("Modo 'out-of-domain'. Procesando nueva interacción.");
+                    serverData.userinput = myText;  // Guardamos la nueva entrada
+                    awaitingResponse = false;  // Restablecemos awaitingResponse
+                    await handleNextStep();  // Volvemos a llamar a `handleNextStep`
+                    return;
+                }
+
+                // Si estamos procesando una respuesta a una pregunta
                 if (questionKey && myText !== "") {
-                    // Actualizar los slots llenados y las respuestas del usuario
                     filledParams[questionKey] = myText;
-                    console.log("filledParams:", filledParams);
-                    serverData.filledSlots[questionKey] = myText; // Actualizar el slot en serverData
-                    arrayAnswer.push({
-                        question: questionsDict[questionKey],
-                        answer: myText
-                    });
+                    serverData.filledSlots[questionKey] = myText;
+                    arrayAnswer.push({ chatbot: questionsDict[questionKey], user: myText });
+                    serverData.useranswers.push({ chatbot: questionsDict[questionKey], user: myText });
 
-                    console.log("Array de respuestas:", arrayAnswer);
+                    delete questionsDict[questionKey];  // Eliminar la pregunta contestada
+                    arrayQuestions.shift();  // Eliminar la primera pregunta
 
-                    serverData.useranswers.push({
-                        question: questionsDict[questionKey],
-                        answer: myText
-                    }); // Actualizar la respuesta en serverData
-
-                    delete questionsDict[questionKey]; // Eliminar la pregunta contestada
-
-                    let keysArray = Object.keys(questionsDict);
-                    if (keysArray.length > 0) {
-                        questionKey = keysArray[0]; // Actualizar la clave de la siguiente pregunta
-                    }
-
-                    // Mostrar la siguiente pregunta si hay más en el array
+                    // Si hay más preguntas, las mostramos
                     if (arrayQuestions.length > 0) {
-                        console.log("elimino la pregunta: ", arrayQuestions[0]);
-                        arrayQuestions.shift();
-                        if(arrayQuestions.length > 0) {
-                            showQuestion(0); // Mostrar la siguiente pregunta
-                        } else {
-                            console.log("No hay más preguntas");
-                            // Si no hay más preguntas, pasar al siguiente paso
-                            turnCount++;
-                            await handleNextStep();
-                        }
+                        questionKey = Object.keys(questionsDict)[0];  // Actualizamos la clave para la siguiente pregunta
+                        showQuestion(0);  // Mostramos la siguiente pregunta
+                        awaitingResponse = false;  // Restablecemos awaitingResponse aquí
                     } else {
-                        console.log("No hay más preguntas");
-                        // Si no hay más preguntas, pasar al siguiente paso
-                        turnCount++;
-                        await handleNextStep();
+                        console.log("No hay más preguntas, llamando a handleNextStep.");
+                        await handleNextStep();  // Llamamos al siguiente paso
                     }
-                } else {
-                    // Si no hay pregunta clave o la entrada está vacía, avanzar al siguiente paso
-                    await handleNextStep();
                 }
             }
         });
+
     </script>
 
 </body>

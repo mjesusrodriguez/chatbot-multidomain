@@ -3,12 +3,16 @@ from flask import Flask, render_template, request, jsonify
 import json
 import random
 import requests
+import re
 
-from domain_manager import predict_domain
-from intentrec import intentRecWithChatGPT2
-from mongo_config import get_database
+from disc_parameter import get_top_parameters_combined, update_frequencies_for_requested_slots, \
+    detect_and_update_other_slots
+from domain_manager import domain_manager_gpt
+from intentrec import intentRecWithChatGPT
+from mongo_config import MongoDB
 from openai_config import setup_openai
-from questionimprovement import improveQuestionchatGPT
+from opendomain import opendomainconversation
+from questionimprovement import improveQuestionchatGPT, createQuestionGPT
 from questionretrieval import questionsRetrieval
 from slotfilling import extractSlots, slotFillingGPT
 from tagfilter import tagFilter, getAditionalQuestions
@@ -16,9 +20,9 @@ from tagfilter import tagFilter, getAditionalQuestions
 app = Flask(__name__)
 
 # Obtener la base de datos
-db = get_database()
+db = MongoDB()
 # Obtener la colección de servicios de restaurantes
-restaurant_sv = db.restaurant
+#restaurant_sv = db.restaurant
 
 model_engine = setup_openai()
 
@@ -26,15 +30,19 @@ model_engine = setup_openai()
 service_id = ""
 #variable global para guardar el intent
 intent = ""
+#variable para guardar la historia del diálogo
+dialogue_history = {}
 
 #Devolver los servicios filtrados según los tags que contengan
-def filterServicesByTag(intentServices, userTags):
+def filterServicesByTag(intentServices, userTags, domain):
     #tagServices = []
     services = {}
 
+    collection = db.get_collection(domain, 'services')
+
     for service_id in intentServices:
         #Busco el servicio por id
-        document = restaurant_sv.find_one({"_id": ObjectId(service_id)})
+        document = collection.find_one({"_id": ObjectId(service_id)})
 
         #Encuentro el servicio (debería siempre darlo ya que lo hemos guardado previamente)
         if document:
@@ -69,15 +77,42 @@ def detect_positive_answers(response_dict):
 
     return positive_tags
 
+# Lista de palabras clave de despedida
+goodbye_keywords = ['goodbye', 'bye', 'see you', 'later', 'farewell', 'take care', 'thanks', 'thank you', 'talk to you later', 'bye bye']
+
+def check_for_goodbye(user_input):
+    # Normaliza el input del usuario a minúsculas y compara con las palabras clave
+    for keyword in goodbye_keywords:
+        if re.search(rf'\b{keyword}\b', user_input.lower()):
+            return True
+    return False
+
+# Lista de frases comunes que indican un posible dominio abierto
+open_domain_phrases = [
+    r'what do you think',  # Detectar preguntas del tipo "What do you think..."
+    r'tell me about',      # Preguntas más generales del tipo "Tell me about..."
+    r'can you share',      # Preguntas como "Can you share..."
+    r'what is your opinion',  # Preguntas como "What is your opinion..."
+    r'explain to me',      # Expresiones como "Explain to me..."
+    # Puedes añadir más patrones si es necesario
+]
+
+# Función para detectar dominio abierto mediante patrones
+def detect_open_domain(user_input):
+    for phrase in open_domain_phrases:
+        if re.search(phrase, user_input.lower()):
+            return True
+    return False
+
 @app.route('/')
 def index():
     return render_template('chat.html')
 
-#PRIMERA INTERACCIÓN CON EL USUARIO
+# PRIMERA INTERACCIÓN CON EL USUARIO
 @app.route('/intent', methods=['POST'])
 def intentrec():
+    print("entro en intent")
     questions = {}
-    filledParams = {'pricerange': '', 'food': ''}  # Inicializo respuestas vacías
 
     # Obtener datos del cuerpo de la solicitud POST
     data = request.get_json()  # Utiliza get_json() para obtener datos JSON
@@ -89,82 +124,98 @@ def intentrec():
     userInput = data.get('userinput')
     print(userInput)
 
-    #predicción de dominio
-    domain = predict_domain(userInput)
+    userAnswers = data.get('useranswers')
+    print("USER ANSWERS: ", userAnswers)
+    if userAnswers is None:
+        userAnswers = []
+
+    # Comprobar si el usuario se ha despedido
+    if check_for_goodbye(userInput):
+        # Actualizar el historial en 'userAnswers'
+        userAnswers.append({"user": userInput, "chatbot": "Thank you for chatting! Goodbye!"})
+        return jsonify({"chatbot_answer": "Thank you for chatting! Goodbye!", "end_conversation": True, "useranswers": userAnswers})
+
+    # Predicción de dominio
+    domain = domain_manager_gpt(userInput)
     print("DOMAIN: ", domain)
-    userAnswers = data.get('answers')
+
+    # Detectar si el input pertenece a dominio abierto con patrones conocidos
+    if detect_open_domain(userInput):
+        print("Detectado como dominio abierto por patrón")
+        domain = 'out-of-domain'
+
+    # Si el dominio es out-of-domain llamo al generador de diálogo abierto, con la historia del diálogo
+    if domain.lower() == "out-of-domain":
+        print("ENTRO EN OUT-OF-DOMAIN")
+        chatbot_answer = opendomainconversation(userInput, userAnswers)
+        # Agregar la interacción actual al historial de 'userAnswers'
+        userAnswers.append({"user": userInput, "chatbot": chatbot_answer})
+        return jsonify({'chatbot_answer': chatbot_answer, 'dom': domain.lower(), 'useranswers': userAnswers}), 200
+
+    # Obtener los dos parámetros más frecuentes
+    top_slots_list = get_top_parameters_combined(domain)
+    print("Dos parámetros más frecuentes:", top_slots_list)
+
+    # Inicializar el diccionario filledParams con los nombres de los slots rescatados
+    filledParams = {slot['parameter']: '' for slot in top_slots_list}
+    print("FilledSlots inicial:", filledParams)
 
     # Reconocimiento de intent - Servicio intentrec
-    user_intent = intentRecWithChatGPT2(userInput)
+    user_intent = intentRecWithChatGPT(userInput, domain)
     intent = user_intent.lower()
     print(intent)
 
-    #Voy a ver que slots me da ya el usuario - Servicio requiredslots
-    reqSlots = ["pricerange", "food"]
+    # Ahora puedes usar top_slots_list sin problemas para extraer los nombres de los slots
+    print("Contenido de top_slots:", top_slots_list)  # Ya convertido en lista previamente
 
-    if not isinstance(userInput, str):
-        raise TypeError(f"Expected 'input' to be of type 'str', got {type(userInput)}")
+    reqSlots = [slot['parameter'] for slot in top_slots_list]
+    print("Slots requeridos:", reqSlots)
 
-    if not isinstance(reqSlots, list):
-        raise TypeError(f"Expected 'slots' to be of type 'list', got {type(reqSlots)}")
-
-
+    # Slot filling con GPT
     slots = slotFillingGPT(userInput, reqSlots)
     print("Slots generados:", slots)
-
-    # Initialize lists to store null and non-null parameters
-    null_params = []
 
     # Verifica si slots es una cadena y convierte en lista de diccionarios
     if isinstance(slots, str):
         try:
-            slots_list = json.loads(slots)  # Convertir de cadena JSON a lista de diccionarios
+            slots_list = json.loads(slots)  # Convertir de cadena JSON a lista de diccionarios o diccionario
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON format for 'slots': {e}")
     else:
         slots_list = slots
 
+    # Asegurarse de que 'slots_list' sea un diccionario o lista de diccionarios
+    if isinstance(slots_list, dict):
+        slots_list = [slots_list]  # Convertir el diccionario a una lista con un solo elemento
+    elif not isinstance(slots_list, list):
+        raise TypeError(f"Expected 'slots' to be of type 'list' or 'dict', got {type(slots_list)}")
+
+    # Actualizamos los slots rellenados en filledParams
     try:
-        # Verify if slots is a string and convert it into a list of dictionaries
-        if isinstance(slots, str):
-            try:
-                slots_data = json.loads(slots)  # Convert from JSON string to Python object
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON format for 'slots': {e}")
-        else:
-            slots_data = slots
-
-        # Ensure slots_data is a list of dictionaries
-        if isinstance(slots_data, dict):
-            # If slots_data is a dictionary, wrap it in a list
-            slots_list = [slots_data]
-        elif isinstance(slots_data, list):
-            slots_list = slots_data
-        else:
-            raise TypeError(f"Expected 'slots_data' to be of type 'list' or 'dict', got {type(slots_data)}")
-
         for slots_dict in slots_list:
             if isinstance(slots_dict, dict):
-                # Iterate through the dictionary and categorize parameters
                 for param, value in slots_dict.items():
-                    if value == "Null":
-                        null_params.append(param)
-                    else:
+                    # Si el valor no es "Null", llenamos el slot en filledParams
+                    if value != "Null":
                         filledParams[param] = value
-            else:
-                print(f"Unexpected data type in slots_list: {type(slots_dict)}")
-
     except Exception as e:
         print(f"An error occurred: {e}")
 
-    # Create a string for each non-null parameter and append it to the questions vector
-    for param in null_params:
-        if (param == 'pricerange'):
-            questions['pricerange'] = improveQuestionchatGPT("What is the pricerange of the restaurant you are looking for?")
-        if (param == 'food'):
-            questions['food'] = improveQuestionchatGPT("Which is the kind of food you want to eat?")
+    # Generamos preguntas para los slots no rellenados (aquellos con valor "Null")
+    null_params = [param for slots_dict in slots_list for param, value in slots_dict.items() if value == "Null"]
 
-    return jsonify({'questions': questions, 'filled': filledParams, 'intent': intent, 'userinput': userInput}), 202
+    # Crear una pregunta para cada slot no rellenado (valor "Null") usando GPT
+    for param in null_params:
+        # Usar GPT para generar una pregunta personalizada para cada parámetro no rellenado
+        questions[param] = createQuestionGPT(param, domain)
+
+    # Ahora usamos slots_list en lugar de slots
+    update_frequencies_for_requested_slots(slots_list, reqSlots, domain)
+
+    # Detectar y actualizar otros slots que el usuario haya mencionado pero no sean los top solicitados
+    detect_and_update_other_slots(userInput, top_slots_list, domain)
+
+    return jsonify({'questions': questions, 'filled': filledParams, 'intent': intent, 'userinput': userInput, 'dom': domain, 'reqslots': reqSlots}), 202
 
 #SEGUNDA INTERACCIÓN CON EL USUARIO
 @app.route('/chat', methods=['GET', 'POST'])
@@ -184,64 +235,87 @@ def chat():
         return jsonify({"error": "No data received"}), 400
 
     intent = data_from_client["intent"]
+    domain = data_from_client["domain"]
     userInput = data_from_client["userinput"]
     userAnswers = data_from_client.get('useranswers', [])
 
-    price = data_from_client["filledSlots"]["pricerange"]
-    cuisinetype = data_from_client["filledSlots"]["food"]
+    reqSlots = data_from_client["reqslots"]
 
-    #Selecciono un servicio - Servicio TagFilter
-    services = tagFilter(userInput, intent, data_from_client)
-    print("FILTRO POR CAMPOS OBLIGATORIOS")
-    print(services)
+    if check_for_goodbye(userInput):
+        return jsonify({"chatbot_answer": "Thank you for chatting! Goodbye!", "end_conversation": True})
+
+    # Crear una lista para los parámetros dinámicos
+    dynamic_params = reqSlots  # Todos los slots dinámicos
+
+    #Selecciono un servicio
+    services = tagFilter(userInput, intent, data_from_client, domain)
 
     # Voy a coger los parámetros discriminatorios de los servicios si son más de uno.
     if len(services) > 1:
-        aditional_questions, filledParams = getAditionalQuestions(services, userInput, intent, data_from_client)
+        aditional_questions, filledParams = getAditionalQuestions(services, userInput, intent, data_from_client, domain)
         return jsonify(
-            {'questions': aditional_questions, 'filled': filledParams, 'intent': intent, 'userinput': userInput, 'services': [str(service) for service in services], 'useranswers': userAnswers}), 202
+            {'questions': aditional_questions, 'filled': filledParams, 'intent': intent, 'userinput': userInput, 'services': [str(service) for service in services], 'useranswers': userAnswers, 'dom': domain, 'reqslots': reqSlots}), 202
 
     else:
         # Selecciono el que se ha devuelto
         service_id = services[0]
-        ##########################################
-        # consulto en los servicios que tengo que campos se han rellenado ya y cuales faltan y devuelvo las preguntas.
-        #slotFillingResponse = impSlotFillingChatGPT(userInput, service_id, intent, userAnswers)
-        slots = extractSlots(intent, service_id)
+
+        # Consulto en los servicios que tengo que campos se han rellenado ya y cuales faltan y devuelvo las preguntas.
+        slots = extractSlots(intent, service_id, domain)
         slotFillingResponse = slotFillingGPT(userInput, slots, userAnswers)
 
-        # Convert the string to a dictionary
+        # Verificar el tipo de respuesta
+        print(f"Respuesta de slotFillingGPT: {slotFillingResponse}")
+
+        # Convertir la respuesta en una lista de diccionarios
         sf_data = json.loads(slotFillingResponse)
 
-        for key, value in sf_data.items():
-            if value == "Null":
-                emptyParams[key] = value
-            else:
-                filledParams[key] = value
+        # Verifica si sf_data es una lista o un diccionario
+        if isinstance(sf_data, list):
+            # Iterar sobre cada elemento de la lista (donde cada elemento es un diccionario)
+            for item in sf_data:
+                if isinstance(item, dict):
+                    for key, value in item.items():
+                        if value == "Null":
+                            emptyParams[key] = value
+                        else:
+                            filledParams[key] = value
+        elif isinstance(sf_data, dict):
+            # Si sf_data es un diccionario, itera sobre él directamente
+            for key, value in sf_data.items():
+                if value == "Null":
+                    emptyParams[key] = value
+                else:
+                    filledParams[key] = value
+        else:
+            raise TypeError(f"Expected list or dict, got {type(sf_data)}")
 
-        #Quitamos food y pricerange del vector.
-        if "pricerange" in emptyParams:
-            emptyParams.pop("pricerange")
+        # Mostrar los resultados de los parámetros vacíos y llenos
+        print(f"Parámetros vacíos (emptyParams): {emptyParams}")
+        print(f"Parámetros llenos (filledParams): {filledParams}")
 
-        if "food" in emptyParams:
-            emptyParams.pop("food")
+        # Eliminar los slots que ya han sido llenados desde dynamic_params
+        for param in dynamic_params:
+            if param in emptyParams:
+                emptyParams.pop(param)
 
         print("EMPTY PARAMS")
         print(emptyParams)
 
-        #Para evitar posibles errores voy a poner los filled params del principio
-        filledParams["pricerange"] = price
-        filledParams["food"] = cuisinetype
+        # Evitar posibles errores, rellenar filledParams con los slots iniciales desde dynamic_params
+        for param in dynamic_params:
+            filledParams[param] = data_from_client["filledSlots"].get(param, "")
 
         print("FILLED PARAMS")
         print(filledParams)
 
         # hago una llamada a la función que dado un intent y un id me da las preguntas.
-        intent_info = questionsRetrieval(service_id, intent)
+        intent_info = questionsRetrieval(service_id, intent, domain)
 
         # Cuento la cantidad de parametros que hay en el json
         intent_info_json = intent_info[0].json
         slots = intent_info_json["intent"]["slots"]
+        print("SLOTS", slots)
 
         json_slots = json.dumps(emptyParams)
         parsed_items = json.loads(json_slots)
@@ -250,15 +324,25 @@ def chat():
 
         # Guardo las preguntas de los parámetros que hacen falta.
         questions = {}
+
         for empty in parsed_items:
-            improved_question = improveQuestionchatGPT(slots[empty])
-            questions[empty] = improved_question
+            if parsed_items[empty] == 'Null':  # Solo procesar si el slot aún no ha sido llenado
+                # Buscar en 'slots' el valor de la clave correspondiente a 'empty'
+                if empty in slots:
+                    # Eliminar comillas dobles si existen
+                    question = slots[empty].replace('"', '')
+
+                    # Mejorar la pregunta con el método
+                    improved_question = improveQuestionchatGPT(question)
+                    questions[empty] = improved_question
+                else:
+                    print(f"Error: {empty} no se encontró en los slots.")
 
         # return questions
         print("QUESTIONS")
         print(questions)
         return jsonify(
-            {'questions': questions, 'filled': filledParams, 'service_id': str(service_id), 'intent': intent, 'useranswers': userAnswers}), 202
+            {'questions': questions, 'filled': filledParams, 'service_id': str(service_id), 'intent': intent, 'useranswers': userAnswers, 'reqslots': reqSlots}), 202
 
 #TERCERA INTERACCIÓN CON EL USUARIO.
 @app.route('/slotfilling', methods=['GET', 'POST'])
@@ -272,9 +356,16 @@ def slotfilling():
     intent = data_from_client["intent"]
     userInput = data_from_client["userinput"]
     userAnswers = data_from_client["useranswers"]
+    domain = data_from_client["domain"]
 
-    price = data_from_client["filledSlots"]["pricerange"]
-    cuisinetype = data_from_client["filledSlots"]["food"]
+    # Obtener los slots dinámicos de reqslots
+    reqSlots = data_from_client.get("reqslots", {})
+
+    # Crear una lista para los parámetros dinámicos
+    dynamic_params = reqSlots  # Todos los slots dinámicos
+
+    if check_for_goodbye(userInput):
+        return jsonify({"chatbot_answer": "Thank you for chatting! Goodbye!", "end_conversation": True})
 
     #cojo los datos de filledParams
     filledParams = data_from_client["filledSlots"]
@@ -288,7 +379,7 @@ def slotfilling():
     print("SERVICES")
     print(services)
     selected_services = []
-    selected_services = filterServicesByTag(services, positive_tags)
+    selected_services = filterServicesByTag(services, positive_tags, domain)
     print("SELECTED SERVICES BY NEW TAGS")
     print(selected_services)
 
@@ -312,7 +403,7 @@ def slotfilling():
 
     #CONTINUACIÓN DEL FLUJO NORMAL
     #extraigo los slots
-    slots = extractSlots(intent, service_id)
+    slots = extractSlots(intent, service_id, domain)
 
     # Le paso los slots a la tarea de SF, como es una tercera interacción, voy a pasarle el histórico del diálogo, para que rellene también
     # según ha contestado en las preguntas intermedias.
@@ -322,31 +413,44 @@ def slotfilling():
     # Convert the string to a dictionary
     sf_data = json.loads(slotFillingResponse)
 
-    for key, value in sf_data.items():
-        if value == "Null":
-            emptyParams[key] = value
-        else:
-            filledParams[key] = value
+    # Verificar si sf_data es una lista o un diccionario
+    if isinstance(sf_data, list):
+        # Si es una lista, iterar por la lista de diccionarios
+        for item in sf_data:
+            for key, value in item.items():
+                if value == "Null":
+                    emptyParams[key] = value
+                else:
+                    filledParams[key] = value
+    elif isinstance(sf_data, dict):
+        # Si es un diccionario, iterar directamente
+        for key, value in sf_data.items():
+            if value == "Null":
+                emptyParams[key] = value
+            else:
+                filledParams[key] = value
 
-    # Quitamos food y pricerange del vector.
-    if "pricerange" in emptyParams:
-        emptyParams.pop("pricerange")
-
-    if "food" in emptyParams:
-        emptyParams.pop("food")
+    # Eliminar los slots que ya han sido llenados desde dynamic_params
+    for param in dynamic_params:
+        if param in emptyParams:
+            emptyParams.pop(param)
 
     print("EMPTY PARAMS")
     print(emptyParams)
 
-    # Para evitar posibles errores voy a poner los filled params del principio
-    filledParams["pricerange"] = price
-    filledParams["food"] = cuisinetype
+    # Evitar posibles errores, rellenar filledParams con los slots iniciales desde dynamic_params
+    for param in dynamic_params:
+        # Como reqSlots es una lista, verificamos si param está en esa lista
+        if param in reqSlots:
+            filledParams[param] = ""  # Puedes ajustar el valor predeterminado si es necesario
+        else:
+            filledParams[param] = "Null"  # O el valor por defecto si no está presente
 
     print("FILLED PARAMS")
     print(filledParams)
 
     # hago una llamada a la función que dado un intent y un id me da las preguntas.
-    intent_info = questionsRetrieval(service_id, intent)
+    intent_info = questionsRetrieval(service_id, intent, domain)
 
     # Cuento la cantidad de parametros que hay en el json
     intent_info_json = intent_info[0].json
@@ -380,8 +484,15 @@ def data():
         print(data_from_client)
 
         #Busco el server del servicio elegido.
-        # Busco el servicio por id
-        document = restaurant_sv.find_one({"_id": ObjectId(data_from_client["service"])})
+        # Obtener el dominio del cliente
+        domain = data_from_client["domain"]
+
+        # Acceder a la colección dinámica basada en el dominio
+        services_collection = db.get_collection(domain, 'services')
+
+        # Busco el servicio por id en la colección correspondiente al dominio
+        document = services_collection.find_one({"_id": ObjectId(data_from_client["service"])})
+
         document_str = str(document)
         data = json.dumps(document_str)
 

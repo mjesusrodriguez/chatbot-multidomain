@@ -1,29 +1,33 @@
 import json
 import openai
 from bson import ObjectId
-from mongo_config import get_database
+from mongo_config import MongoDB
 from openai_config import setup_openai
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-# Cargar el modelo y el tokenizador fine-tuneado
-#finetuned_model_name = "./finetuned_slotfilling/model"  # Cambia esto a la ruta donde se guardó tu modelo fine-tuneado
-#tokenizer = AutoTokenizer.from_pretrained(finetuned_model_name)
-#finetuned_model = AutoModelForCausalLM.from_pretrained(finetuned_model_name)
 
 model_engine = setup_openai()
 
 # Obtener la base de datos
-db = get_database()
-# Obtener la colección de servicios de restaurantes
-restaurant_sv = db.restaurant
+db = MongoDB()
 
-def extractSlots(intent, service_id):
+def extract_schema_properties(schema):
+    """
+    Función auxiliar para extraer las propiedades de un esquema referenciado en los components.
+    """
+    slots = []
+    if 'properties' in schema:
+        for prop_name, prop_details in schema['properties'].items():
+            slots.append(prop_name)
+    return slots
+
+def extractSlots(intent, service_id, domain):
     # Asegurarte de que el intent comienza con "/"
     if not intent.startswith("/"):
         intent = "/" + intent
+        print("el intent es ", intent)
 
     # Busco el servicio por id
-    document = restaurant_sv.find_one({"_id": ObjectId(service_id)})
+    services = db.get_collection(domain, 'services')
+    document = services.find_one({"_id": ObjectId(service_id)})
 
     if not document:
         raise ValueError(f"No se encontró ningún servicio con el ID: {service_id}")
@@ -76,9 +80,11 @@ def extractSlots(intent, service_id):
                 for content_type, content_schema in request_body['content'].items():
                     if '$ref' in content_schema['schema']:
                         resolved_schema = resolve_reference(content_schema['schema']['$ref'])
-                        extract_schema_properties(resolved_schema)
+                        schema_slots = extract_schema_properties(resolved_schema)
+                        slots.extend(schema_slots)
                     else:
-                        extract_schema_properties(content_schema['schema'])
+                        schema_slots = extract_schema_properties(content_schema['schema'])
+                        slots.extend(schema_slots)
 
     print("Slots finales:", slots)  # Debugging print
 
@@ -119,30 +125,32 @@ def slotFillingGPT(userInput, slots, userAnswers = None):
         model="gpt-3.5-turbo",  # Puedes usar "gpt-4" si tienes acceso
         messages=messages,
         temperature=0,
-        max_tokens=128,
+        max_tokens=256,
         top_p=1,
         frequency_penalty=0.5,
         presence_penalty=0
     )
 
-    print("RESPUESTA CHATGPT")
     response = response.choices[0].message.content
 
     print("RESPUESTA CHATGPT")
     print(response)
+
     return response
 
-def impSlotFillingChatGPT(input, service, intent, userAnswers = None):
+def impSlotFillingChatGPT(input, service, intent, domain, userAnswers=None):
     # Busco el servicio por id
-    document = restaurant_sv.find_one({"_id": ObjectId(service)})
+    services = db.get_collection(domain, 'services')
+    document = services.find_one({"_id": ObjectId(service)})
+
     document_str = str(document)
     json_wsl = json.dumps(document_str)
     if userAnswers is not None:
         userAnswers_str = json.dumps(userAnswers)
-        #prompt = "Forget the information provided in our previous interactions. Provided the prompt: \""+ input +"\", these previous inputs during the conversation: " + userAnswers_str + " and the API specification: "+ json_wsl +", which contains an endpoint called /"+intent+"' with a list of parameters, give me a JSON list with the slots and the values that are given in the prompt directly. If the value is not given, give the value \"Null\" the key of the dictionary is the parameter name and the value, the parameter value"
-        prompt = "Forget the information provided in our previous interactions. Provided the prompt: \""+ input +"\", these previous inputs during the conversation: " + userAnswers_str + " and the API specification: "+ json_wsl +", which contains an endpoint called /"+intent+"' with a list of parameters, give me a JSON list with the slots and the values that are given in the prompt directly. If the value is not given, give the value \"Null\" the key of the dictionary is the parameter name and the value, the parameter value"
+        # prompt = "Forget the information provided in our previous interactions. Provided the prompt: \""+ input +"\", these previous inputs during the conversation: " + userAnswers_str + " and the API specification: "+ json_wsl +", which contains an endpoint called /"+intent+"' with a list of parameters, give me a JSON list with the slots and the values that are given in the prompt directly. If the value is not given, give the value \"Null\" the key of the dictionary is the parameter name and the value, the parameter value"
+        prompt = "Forget the information provided in our previous interactions. Provided the prompt: \"" + input + "\", these previous inputs during the conversation: " + userAnswers_str + " and the API specification: " + json_wsl + ", which contains an endpoint called /"+intent+"' with a list of parameters, give me a JSON list with the slots and the values that are given in the prompt directly. If the value is not given, give the value \"Null\" the key of the dictionary is the parameter name and the value, the parameter value"
     else:
-        prompt = "Forget the information provided in our previous interactions. Provided the prompt: \""+ input +"\", and the API specification: "+ json_wsl +", which contains an endpoint called /"+intent+"' with a list of parameters, give me a JSON list with the slots and the values that are given in the prompt directly. If the value is not given, give the value \"Null\" the key of the dictionary is the parameter name and the value, the parameter value"
+        prompt = "Forget the information provided in our previous interactions. Provided the prompt: \"" + input + "\", and the API specification: " + json_wsl + ", which contains an endpoint called /"+intent+"' with a list of parameters, give me a JSON list with the slots and the values that are given in the prompt directly. If the value is not given, give the value \"Null\" the key of the dictionary is the parameter name and the value, the parameter value"
 
     print(prompt)
     # Generate a response

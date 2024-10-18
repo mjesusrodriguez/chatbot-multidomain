@@ -1,19 +1,18 @@
 from bson import ObjectId
 from flask import jsonify
 
-from mongo_config import get_database
+from mongo_config import MongoDB
 
 # Obtener la base de datos
-db = get_database()
-# Obtener la colección de servicios de restaurantes
-restaurant_sv = db.restaurant
+db = MongoDB()
 
 #Le paso el intent y el servicio a esta función que representará los ENDPOINT del servicio.
 #@app.route('/intentinfo/<service_id>/intent/<intent_name>')
-def questionsRetrieval(service_id, intent_name):
+def questionsRetrieval(service_id, intent_name, domain):
+    services = db.get_collection(domain, 'services')
     intentInfo = None  # Default value
     # Busca el servicio
-    document = restaurant_sv.find_one({"_id": ObjectId(service_id)})
+    document = services.find_one({"_id": ObjectId(service_id)})
     paths = document.get('paths', [])
 
     # Itero el JSON y saco los intents que tiene definido el servicio

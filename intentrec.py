@@ -2,15 +2,15 @@
 import json
 import openai
 
-from mongo_config import get_database
+from mongo_config import MongoDB
 from openai_config import setup_openai
 
 model_engine = setup_openai()
+db = MongoDB()
 
-def getIntents():
+def getIntents(domain):
     # obtener la base de datos de intents
-    db_intents = get_database("intents")
-    intents_collection = db_intents.restaurant
+    intents_collection = db.get_collection(domain, 'intents')
 
     # Step 3: Query the collection to get all the intents
     intents_cursor = intents_collection.find({}, {'intent': 1})  # Fetch all documents, but only the 'intent' field
@@ -21,16 +21,15 @@ def getIntents():
     print("LOS INTENTS SON: ", intents_list)
     return intents_list
 
-def intentRecWithChatGPT2(input):
-    intent_array = getIntents()
+def intentRecWithChatGPT(input, domain):
+    intent_array = getIntents(domain)
     # Convertir el vector a una cadena de caracteres con comas
     intents = ','.join(map(str, intent_array))
-
 
     messages = [
         {
             "role": "user",
-            "content": "You are a chatbot in the restaurant domain, and your task is to determine the intent behind a user's input or query. Below is a list of intents related to the restaurant domain: "+ intents +". Given the input '"+input+"', determine the intent of the user based on the provided intents, return a JSON with only one. Consider that users often want to make reservations when specifying a type of restaurant."
+            "content": "You are a chatbot in the restaurant domain, and your task is to determine the intent behind a user's input or query. Below is a list of intents related to the " + domain + " domain: "+ intents +". Given the input '" + input + "', determine the intent of the user based on the provided intents, return a JSON with only one. Consider that users often want to make reservations when specifying a type of restaurant."
         }
     ]
 
@@ -57,26 +56,4 @@ def intentRecWithChatGPT2(input):
         print("Error al decodificar JSON")
         intent = None
 
-    return intent
-
-def intentRecWithChatGPT(input):
-    #Cojo los intents que estén en la BBDD
-    intents = getIntents()
-
-    #prompt="for the following input \""+input+"\" give me a JSON with only an intent of the user between those: BookRestaurant, PlayMusic, AddToPlayList, RateBook, SearchScreeningEvent, GetWeather, SearchCreativeWork"
-    prompt = "You are a chatbot in the restaurant domain, and your task is to determine the intent behind a user's input or query. Below is a list of intents related to the restaurant domain: BookRestaurant, RestaurantInformation, FindRestaurant, OrderFood. Given the input '"+input+"', determine the intent of the user based on the provided intents, return a JSON with only one. Consider that users often want to make reservations when specifying a type of restaurant."
-    completion = openai.Completion.create(
-        engine=model_engine,
-        prompt=prompt,
-        temperature=0.3,
-        max_tokens=64,
-        top_p=1,
-        frequency_penalty=0.5,
-        presence_penalty=0)
-    response = completion.choices[0].text
-    print(response)
-
-    #Proceso JSON
-    data = json.loads(response)
-    intent = data["intent"]
     return intent

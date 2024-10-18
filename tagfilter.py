@@ -4,21 +4,20 @@ import spacy
 from bson import ObjectId
 from nltk.corpus import wordnet
 
-from mongo_config import get_database
+from mongo_config import MongoDB
 from openai_config import setup_openai
-from serviceselection import selectServiceByIntent, serviceSelection
+from serviceselection import selectServiceByIntent, serviceSelection, impServiceSelection
 
 # Obtener la base de datos
-db = get_database()
-# Obtener la colección de servicios de restaurantes
-restaurant_sv = db.restaurant
+db = MongoDB()
 
 model_engine = setup_openai()
 
-def getTagsFromService(service_id):
+def getTagsFromService(service_id, domain):
     tags = []
+    services = db.get_collection(domain, 'services')
     # Busco el servicio por id
-    document = restaurant_sv.find_one({"_id": ObjectId(service_id)})
+    document = services.find_one({"_id": ObjectId(service_id)})
 
     # Check if the document exists and contains 'tags'
     if document and 'tags' in document:
@@ -68,13 +67,14 @@ def generateQuestionChatGPT(tags):
     return data_dict
 
 #Devolver los servicios filtrados según los tags que contengan
-def filterServicesByTag(intentServices, userTags):
+def filterServicesByTag(intentServices, userTags, domain):
     #tagServices = []
     services = {}
+    services_bbdd = db.get_collection(domain, 'services')
 
     for service_id in intentServices:
         #Busco el servicio por id
-        document = restaurant_sv.find_one({"_id": ObjectId(service_id)})
+        document = services_bbdd.find_one({"_id": ObjectId(service_id)})
 
         #Encuentro el servicio (debería siempre darlo ya que lo hemos guardado previamente)
         if document:
@@ -127,7 +127,7 @@ def getTags(input):
 
     return synonyms
 
-def tagFilter(userInput, intent, data_from_client):
+def tagFilter(userInput, intent, data_from_client, domain):
     # Saco los tags del input del usuario
     tags = getTags(userInput)
 
@@ -135,23 +135,23 @@ def tagFilter(userInput, intent, data_from_client):
     unique_tags = list(set(tags))
 
     # Busco todos los servicios que tengan ese intent
-    intentServices = selectServiceByIntent(intent)
+    intentServices = selectServiceByIntent(intent, domain)
     print("intent service")
     print(intentServices)
 
     # Busco en los servicios si hay alguno con los tags, sino, los cojo todos.
-    tagServices = filterServicesByTag(intentServices, unique_tags)
+    tagServices = filterServicesByTag(intentServices, unique_tags, domain)
     print("FILTRO POR TAG")
     print(tagServices)
 
     # Selecciono según los tags
-    services = serviceSelection(tagServices, userInput, data_from_client["filledSlots"], intent)
+    services = impServiceSelection(tagServices, userInput, data_from_client["filledSlots"], intent, domain)
     print("FILTRO POR CAMPOS OBLIGATORIOS")
     print(services)
 
     return services
 
-def getAditionalQuestions(services, userInput, intent, data_from_client):
+def getAditionalQuestions(services, userInput, intent, data_from_client, domain):
     # Cogeré los tags que no se repitan de los servicios:
     service_tags = set()
     first_iteration = True
@@ -160,7 +160,7 @@ def getAditionalQuestions(services, userInput, intent, data_from_client):
 
     for service_id in services:
         # Cojo los tags de cada servicio
-        tags = getTagsFromService(service_id)
+        tags = getTagsFromService(service_id, domain)
         if first_iteration:
             # For the first service, directly assign its tags to service_tags
             service_tags = set(tags)

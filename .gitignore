@@ -1,7 +1,8 @@
 # Ignorar toda la carpeta input
 input/
 
-
+#Ignorar toda la carpeta model
+model/
 
 # Ignorar archivos de macOS
 .DS_Store
